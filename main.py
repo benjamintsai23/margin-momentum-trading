@@ -9,7 +9,6 @@ from src.config import Config
 from src.utils.logger import Logger
 from src.margin_momentum_analyzer import MarginMomentumAnalyzer
 from src.telegram_notifier import TelegramNotifier
-from src.google_sheets_uploader import GoogleSheetsUploader
 from src.backtest.backtest_engine import BacktestEngine
 
 logger = Logger()
@@ -71,7 +70,6 @@ def analyze(analysis_date: str = None):
         # 初始化分析器和通知器
         analyzer = MarginMomentumAnalyzer()
         notifier = TelegramNotifier()
-        uploader = GoogleSheetsUploader()
 
         # 執行分析
         signals = analyzer.analyze(analysis_date)
@@ -86,12 +84,6 @@ def analyze(analysis_date: str = None):
             print("\n" + "=" * 80)
             print(signals.to_string())
             print("=" * 80)
-
-            # 上報到 Google Sheets
-            try:
-                uploader.append_signals(signals)
-            except Exception as e:
-                logger.warning(f"Google Sheets 上報失敗: {e}", "main")
 
             # 發送買訊通知
             buy_signals = signals[signals['訊號類型'] == 'BUY']
@@ -157,25 +149,6 @@ def backtest(start_date: str = '2023-01-01', end_date: str = None):
         print(f"虧損交易: {results.losing_trades}")
         print(f"勝率: {results.win_rate:.2%}")
         print("=" * 80 + "\n")
-
-        # 上報到 Google Sheets
-        try:
-            uploader = GoogleSheetsUploader()
-            backtest_results = {
-                '回測期間': f"{start_date} ~ {end_date}",
-                '初始資金': results.initial_capital,
-                '最終資金': results.final_capital,
-                '總報酬率': f"{results.total_return:.2%}",
-                '年化報酬率': f"{results.annual_return:.2%}",
-                '夏普比率': round(results.sharpe_ratio, 2),
-                '最大回撤': f"{results.max_drawdown:.2%}",
-                '總交易數': results.total_trades,
-                '勝率': f"{results.win_rate:.2%}",
-                '回測日期': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            }
-            uploader.upload_backtest_results(backtest_results)
-        except Exception as e:
-            logger.warning(f"Google Sheets 上報失敗: {e}", "main")
 
         logger.info("回測完成！", "main")
 

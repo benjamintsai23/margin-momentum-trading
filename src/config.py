@@ -14,14 +14,6 @@ class Config:
     FINLAB_TOKEN = os.getenv("FINLAB_TOKEN")
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-    GOOGLE_SHEETS_ID = os.getenv("GOOGLE_SHEETS_ID")
-
-    # Google Sheets 設定
-    CREDENTIAL_FILE = "credentials.json"
-    GOOGLE_SCOPE = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive"
-    ]
 
     # FinLab 設定
     FINLAB_API_URL = "https://api.finlab.tw"
@@ -123,13 +115,6 @@ class Config:
 
         if not cls.TELEGRAM_CHAT_ID:
             errors.append("⚠️ TELEGRAM_CHAT_ID 未設定（Telegram 通知將無法使用）")
-
-        if not cls.GOOGLE_SHEETS_ID:
-            errors.append("❌ GOOGLE_SHEETS_ID 未設定")
-
-        # 檢查 credentials.json
-        if not os.path.exists("credentials.json"):
-            errors.append("❌ credentials.json 檔案不存在")
 
         # 顯示錯誤訊息
         if errors:
