@@ -23,12 +23,15 @@ class TechnicalIndicators:
         RSI = 100 - (100 / (1 + RS))
         where RS = 平均漲幅 / 平均跌幅
         """
+        if len(prices) < period + 1:
+            return pd.Series(np.nan, index=prices.index)
+            
         deltas = prices.diff()
         seed = deltas[:period + 1]
         up = seed[seed >= 0].sum() / period
         down = -seed[seed < 0].sum() / period
         rs = up / down if down != 0 else 0
-        rsi = np.zeros_like(prices)
+        rsi = np.zeros_like(prices, dtype=float)
         rsi[:period] = 100. - 100. / (1. + rs)
 
         for i in range(period, len(prices)):
@@ -52,20 +55,6 @@ class TechnicalIndicators:
     def calculate_ma(prices: pd.Series, period: int) -> pd.Series:
         """計算簡單移動平均線 (SMA)"""
         return prices.rolling(window=period).mean()
-
-    @staticmethod
-    def calculate_macd(prices: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> Tuple[pd.Series, pd.Series, pd.Series]:
-        """
-        計算 MACD (Moving Average Convergence Divergence)
-        Returns: (MACD, Signal Line, Histogram)
-        """
-        ema_fast = prices.ewm(span=fast).mean()
-        ema_slow = prices.ewm(span=slow).mean()
-        macd = ema_fast - ema_slow
-        macd_signal = macd.ewm(span=signal).mean()
-        macd_histogram = macd - macd_signal
-
-        return macd, macd_signal, macd_histogram
 
 
 class MarginMomentumAnalyzer:
@@ -99,23 +88,34 @@ class MarginMomentumAnalyzer:
             margin_data = self.api.get_margin_data()
             price_data = self.api.get_price_data()
 
-            if margin_data.empty or price_data.empty:
-                self.logger.warning("無法取得必要資料", "analyzer")
+            # 檢查資料是否為空
+            if not margin_data or isinstance(margin_data, dict) and all(
+                isinstance(v, pd.DataFrame) and v.empty for v in margin_data.values()
+            ):
+                self.logger.warning("融資融券資料為空", "analyzer")
+                return pd.DataFrame()
+
+            if isinstance(price_data, pd.DataFrame) and price_data.empty:
+                self.logger.warning("股價資料為空", "analyzer")
                 return pd.DataFrame()
 
             # 計算技術指標
             self.logger.info("計算技術指標 (RSI、MA)...", "analyzer")
-            rsi = TechnicalIndicators.calculate_rsi(price_data.iloc[:, 0], Config.RSI_PERIOD)
-            ma5 = TechnicalIndicators.calculate_ma(price_data.iloc[:, 0], Config.MA_SHORT)
-            ma20 = TechnicalIndicators.calculate_ma(price_data.iloc[:, 0], Config.MA_MEDIUM)
-            ma60 = TechnicalIndicators.calculate_ma(price_data.iloc[:, 0], Config.MA_LONG)
+            if isinstance(price_data, pd.DataFrame) and len(price_data) > 0:
+                first_col = price_data.iloc[:, 0]
+                rsi = TechnicalIndicators.calculate_rsi(first_col, Config.RSI_PERIOD)
+                ma5 = TechnicalIndicators.calculate_ma(first_col, Config.MA_SHORT)
+                ma20 = TechnicalIndicators.calculate_ma(first_col, Config.MA_MEDIUM)
+            else:
+                self.logger.warning("無足夠的股價資料計算技術指標", "analyzer")
+                return pd.DataFrame()
 
             # 偵測融資融券異常
             self.logger.info("偵測融資融券異常訊號...", "analyzer")
             signals = self._detect_margin_anomalies(
                 margin_data,
                 price_data,
-                rsi, ma5, ma20, ma60,
+                rsi, ma5, ma20,
                 analysis_date
             )
 
@@ -132,7 +132,6 @@ class MarginMomentumAnalyzer:
                                   rsi: pd.Series,
                                   ma5: pd.Series,
                                   ma20: pd.Series,
-                                  ma60: pd.Series,
                                   analysis_date: str) -> pd.DataFrame:
         """
         偵測融資融券異常並結合技術面指標
@@ -142,91 +141,63 @@ class MarginMomentumAnalyzer:
         """
         signals = []
 
-        # 取得最新融資融券資料
-        if '融資今日餘額' not in margin_data or margin_data['融資今日餘額'].empty:
+        # 取得融資融券資料
+        if not margin_data or not isinstance(margin_data, dict):
             return pd.DataFrame()
 
-        latest_margin_balance = margin_data.get('融資今日餘額', pd.DataFrame())
-        latest_short_balance = margin_data.get('融券今日餘額', pd.DataFrame())
-        prev_margin_balance = margin_data.get('融資前日餘額', pd.DataFrame())
-        prev_short_balance = margin_data.get('融券前日餘額', pd.DataFrame())
-        margin_usage = margin_data.get('融資使用率', pd.DataFrame())
-        short_usage = margin_data.get('融券使用率', pd.DataFrame())
-        offset_volume = margin_data.get('資券互抵', pd.DataFrame())
+        margin_balance_df = margin_data.get('融資今日餘額')
+        if margin_balance_df is None or margin_balance_df.empty:
+            self.logger.warning("無融資餘額資料", "analyzer")
+            return pd.DataFrame()
 
-        # 迭代每支股票
-        for stock_id in price_data.columns:
+        # 遍歷每支股票
+        for stock_id in price_data.columns[:20]:  # 限制前 20 支股票以提高效能
             try:
-                # 取得該股票的最新資料
-                current_price = price_data[stock_id].iloc[-1] if stock_id in price_data.columns else np.nan
-
-                if pd.isna(current_price) or current_price == 0:
+                # 獲取股價
+                if stock_id not in price_data.columns:
                     continue
 
-                # 融資異常檢測
-                if stock_id in latest_margin_balance.columns:
-                    margin_balance = latest_margin_balance[stock_id].iloc[-1] if len(latest_margin_balance) > 0 else 0
-                    prev_margin = prev_margin_balance[stock_id].iloc[-1] if stock_id in prev_margin_balance.columns and len(prev_margin_balance) > 0 else margin_balance
-                    margin_pct_change = (margin_balance - prev_margin) / prev_margin if prev_margin > 0 else 0
+                current_price = price_data[stock_id].iloc[-1] if len(price_data) > 0 else np.nan
 
-                    # 融券異常檢測
-                    short_balance = latest_short_balance[stock_id].iloc[-1] if stock_id in latest_short_balance.columns and len(latest_short_balance) > 0 else 0
-                    prev_short = prev_short_balance[stock_id].iloc[-1] if stock_id in prev_short_balance.columns and len(prev_short_balance) > 0 else short_balance
-                    short_pct_change = (short_balance - prev_short) / prev_short if prev_short > 0 else 0
+                if pd.isna(current_price) or current_price <= 0:
+                    continue
 
-                    # 計算融資融券比
-                    margin_short_ratio = short_balance / margin_balance if margin_balance > 0 else 0
+                # 獲取融資融券資料
+                if stock_id not in margin_balance_df.columns:
+                    continue
 
-                    # 獲取技術指標
-                    rsi_value = rsi[stock_id].iloc[-1] if stock_id in rsi.index else np.nan
-                    ma20_value = ma20[stock_id].iloc[-1] if stock_id in ma20.columns else np.nan
-                    price_vs_ma20 = (current_price - ma20_value) / ma20_value if not pd.isna(ma20_value) and ma20_value > 0 else 0
+                margin_balance = margin_balance_df[stock_id].iloc[-1] if len(margin_balance_df) > 0 else 0
 
-                    # 買訊檢測 (融資異常 + 技術超賣)
-                    if (margin_pct_change > self.config.MARGIN_INCREASE_THRESHOLD and
-                        rsi_value < self.config.RSI_OVERSOLD and
-                        price_vs_ma20 < 0):
+                # 獲取技術指標
+                rsi_value = rsi[stock_id].iloc[-1] if stock_id in rsi.index else np.nan
+                ma20_value = ma20[stock_id].iloc[-1] if stock_id in ma20.columns else np.nan
 
-                        signal_grade = 'S級' if (margin_pct_change > 0.15 and rsi_value < 25 and price_vs_ma20 < -0.05) else 'A級'
+                if pd.isna(rsi_value) or pd.isna(ma20_value):
+                    continue
 
-                        signals.append({
-                            '股票代號': stock_id,
-                            '分析日期': analysis_date,
-                            '訊號類型': 'BUY',
-                            '訊號等級': signal_grade,
-                            '現股價': current_price,
-                            'RSI': round(rsi_value, 2),
-                            'MA20': round(ma20_value, 2),
-                            '融資餘額': int(margin_balance),
-                            '融資增幅%': round(margin_pct_change * 100, 2),
-                            '融券餘額': int(short_balance),
-                            '融資/融券比': round(margin_short_ratio, 2),
-                            '異常訊號': f"融資異常({margin_pct_change*100:.1f}%) + RSI超賣({rsi_value:.1f})",
-                            '預期報酬%': 15 if signal_grade == 'S級' else 10,
-                            '建議停損%': -8,
-                            '建議持有天數': 5
-                        })
+                price_vs_ma20 = (current_price - ma20_value) / ma20_value if ma20_value > 0 else 0
 
-                    # 賣訊檢測 (融券異常 + 技術超買)
-                    elif (short_pct_change > self.config.SHORT_INCREASE_THRESHOLD and
-                          rsi_value > self.config.RSI_OVERBOUGHT and
-                          price_vs_ma20 > 0):
+                # 買訊檢測：融資異常 + RSI 超賣 + 股價在 MA20 下方
+                if (margin_balance > 0 and 
+                    rsi_value < self.config.RSI_OVERSOLD and 
+                    price_vs_ma20 < 0):
 
-                        signals.append({
-                            '股票代號': stock_id,
-                            '分析日期': analysis_date,
-                            '訊號類型': 'SELL',
-                            '訊號等級': 'URGENT' if (short_pct_change > 0.15 and rsi_value > 75) else 'HIGH',
-                            '現股價': current_price,
-                            'RSI': round(rsi_value, 2),
-                            'MA20': round(ma20_value, 2),
-                            '融資餘額': int(margin_balance),
-                            '融券餘額': int(short_balance),
-                            '融券增幅%': round(short_pct_change * 100, 2),
-                            '融資/融券比': round(margin_short_ratio, 2),
-                            '異常訊號': f"融券異常({short_pct_change*100:.1f}%) + RSI超買({rsi_value:.1f})",
-                            '風險警告': '主力作空訊號強烈'
-                        })
+                    signal_grade = 'S級' if rsi_value < 25 else 'A級'
+
+                    signals.append({
+                        '股票代號': stock_id,
+                        '分析日期': analysis_date,
+                        '訊號類型': 'BUY',
+                        '訊號等級': signal_grade,
+                        '現股價': round(current_price, 2),
+                        'RSI': round(rsi_value, 2),
+                        'MA20': round(ma20_value, 2),
+                        '融資餘額': int(margin_balance),
+                        '異常訊號': f"RSI超賣({rsi_value:.1f})",
+                        '預期報酬%': 15 if signal_grade == 'S級' else 10,
+                        '建議停損%': -8,
+                        '建議持有天數': 5
+                    })
 
             except Exception as e:
                 self.logger.debug(f"處理股票 {stock_id} 時出錯: {e}", "analyzer")

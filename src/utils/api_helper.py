@@ -70,10 +70,10 @@ class FinLabAPIHelper:
             pandas DataFrame
         """
         try:
-            import finlab
-            data = finlab.data.get(key, **kwargs)
+            from finlab import data
+            result = data.get(key, **kwargs)
             logger_instance.debug(f"成功取得資料: {key}", "api_helper")
-            return data
+            return result
         except Exception as e:
             logger_instance.error(f"無法取得資料 {key}: {e}", "api_helper")
             raise
