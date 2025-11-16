@@ -31,15 +31,10 @@ jobs:
           FINLAB_TOKEN: ${{ secrets.FINLAB_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          GOOGLE_SHEETS_ID: ${{ secrets.GOOGLE_SHEETS_ID }}
         run: |
-          # 設定 credentials.json
-          echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > credentials.json
-
-          # 執行分析
           python main.py analyze
 
-      - name: 失敗通知
+      - name: 分析失敗通知
         if: failure()
         uses: appleboy/telegram-action@master
         with:
@@ -53,10 +48,10 @@ jobs:
 
             請檢查日誌了解詳細原因。
 
-      - name: 保存日誌
+      - name: 上傳日誌
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-          name: logs
+          name: analysis-logs
           path: logs/
           retention-days: 7
